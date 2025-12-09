@@ -1,12 +1,10 @@
 # Java
 *.class
-*.jar
-*.war
-*.ear
-target/
 *.log
 
 # Maven
+target/
+!target/*.jar
 .mvn/
 mvnw
 mvnw.cmd
@@ -23,10 +21,6 @@ mvnw.cmd
 .DS_Store
 Thumbs.db
 
-# Test results
-*.txt
-!README.txt
-
-# Temporary files
-*.tmp
-*.bak
+# Output files
+*.out
+*_results.txt

@@ -1,0 +1,1966 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SIEVE & PER: Cache Eviction and Stampede Prevention</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #0a0a1a;
+            --bg-secondary: #12122a;
+            --bg-card: rgba(30, 30, 60, 0.6);
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0c0;
+            --accent-blue: #4a9eff;
+            --accent-purple: #9b59ff;
+            --accent-green: #00d4aa;
+            --accent-red: #ff6b6b;
+            --accent-orange: #ffa94d;
+            --gradient-1: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --gradient-2: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            --gradient-3: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            overflow: hidden;
+            height: 100vh;
+        }
+
+        .presentation {
+            width: 100%;
+            height: 100vh;
+            position: relative;
+        }
+
+        .slide {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 60px 80px;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.5s ease, transform 0.5s ease;
+            transform: translateX(50px);
+            background: var(--bg-primary);
+        }
+
+        .slide.active {
+            opacity: 1;
+            visibility: visible;
+            transform: translateX(0);
+        }
+
+        .slide-title {
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 40px;
+            background: var(--gradient-1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-align: center;
+        }
+
+        .slide-subtitle {
+            font-size: 1.5rem;
+            color: var(--text-secondary);
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .content {
+            display: flex;
+            gap: 40px;
+            width: 100%;
+            max-width: 1400px;
+            justify-content: center;
+            align-items: flex-start;
+        }
+
+        .content-full {
+            width: 100%;
+            max-width: 1200px;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border-radius: 20px;
+            padding: 30px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            flex: 1;
+        }
+
+        .card-title {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: var(--accent-blue);
+        }
+
+        .card ul {
+            list-style: none;
+        }
+
+        .card li {
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            line-height: 1.6;
+        }
+
+        .card li:last-child {
+            border-bottom: none;
+        }
+
+        .card li::before {
+            content: "▸";
+            color: var(--accent-green);
+            font-weight: bold;
+        }
+
+        .highlight {
+            color: var(--accent-green);
+            font-weight: 600;
+        }
+
+        .highlight-blue {
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+
+        .highlight-red {
+            color: var(--accent-red);
+            font-weight: 600;
+        }
+
+        .highlight-orange {
+            color: var(--accent-orange);
+            font-weight: 600;
+        }
+
+        /* Progress bar */
+        .progress-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            height: 4px;
+            background: var(--gradient-1);
+            transition: width 0.3s ease;
+            z-index: 1000;
+        }
+
+        /* Slide counter */
+        .slide-counter {
+            position: fixed;
+            bottom: 20px;
+            right: 30px;
+            font-size: 1rem;
+            color: var(--text-secondary);
+            z-index: 1000;
+        }
+
+        /* Navigation hints */
+        .nav-hints {
+            position: fixed;
+            bottom: 20px;
+            left: 30px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            opacity: 0.6;
+        }
+
+        /* Title slide special styling */
+        .title-slide {
+            background: linear-gradient(135deg, #0a0a1a 0%, #1a1a3a 50%, #0a0a1a 100%);
+        }
+
+        .title-slide .main-title {
+            font-size: 3.5rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #4a9eff, #9b59ff, #00d4aa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-align: center;
+            margin-bottom: 30px;
+            line-height: 1.3;
+        }
+
+        .title-slide .course-info {
+            font-size: 1.5rem;
+            color: var(--text-secondary);
+            margin-bottom: 20px;
+        }
+
+        .title-slide .author {
+            font-size: 1.2rem;
+            color: var(--accent-blue);
+            margin-top: 40px;
+        }
+
+        .title-slide .date {
+            font-size: 1rem;
+            color: var(--text-secondary);
+            margin-top: 10px;
+        }
+
+        /* Chart containers */
+        .chart-container {
+            background: var(--bg-card);
+            border-radius: 20px;
+            padding: 25px;
+            width: 100%;
+            max-width: 800px;
+        }
+
+        .chart-container canvas {
+            max-height: 400px;
+        }
+
+        /* SIEVE Animation */
+        .sieve-demo {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 30px;
+            width: 100%;
+            max-width: 1000px;
+        }
+
+        .sieve-cache {
+            display: flex;
+            gap: 8px;
+            padding: 20px;
+            background: var(--bg-card);
+            border-radius: 15px;
+            position: relative;
+        }
+
+        .cache-slot {
+            width: 70px;
+            height: 80px;
+            border-radius: 10px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .cache-slot.visited {
+            background: linear-gradient(135deg, #00d4aa, #00a080);
+            box-shadow: 0 0 20px rgba(0, 212, 170, 0.4);
+        }
+
+        .cache-slot.not-visited {
+            background: linear-gradient(135deg, #ff6b6b, #cc5555);
+            box-shadow: 0 0 20px rgba(255, 107, 107, 0.4);
+        }
+
+        .cache-slot.evicted {
+            background: #333;
+            opacity: 0.3;
+        }
+
+        .cache-slot .key {
+            font-size: 1.1rem;
+        }
+
+        .cache-slot .visited-bit {
+            font-size: 0.7rem;
+            margin-top: 5px;
+            padding: 2px 8px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+        }
+
+        .hand-pointer {
+            position: absolute;
+            bottom: -35px;
+            font-size: 1.5rem;
+            transition: left 0.5s ease;
+        }
+
+        .sieve-controls {
+            display: flex;
+            gap: 15px;
+        }
+
+        .sieve-btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 25px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .sieve-btn.primary {
+            background: var(--gradient-1);
+            color: white;
+        }
+
+        .sieve-btn.secondary {
+            background: var(--bg-card);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .sieve-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .sieve-log {
+            font-family: 'Consolas', monospace;
+            font-size: 0.95rem;
+            color: var(--accent-green);
+            min-height: 30px;
+        }
+
+        /* PER Demo */
+        .per-demo {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 30px;
+            width: 100%;
+            max-width: 900px;
+        }
+
+        .per-timeline {
+            width: 100%;
+            height: 120px;
+            background: var(--bg-card);
+            border-radius: 15px;
+            position: relative;
+            padding: 20px;
+        }
+
+        .timeline-bar {
+            position: absolute;
+            top: 50%;
+            left: 40px;
+            right: 40px;
+            height: 8px;
+            background: #333;
+            border-radius: 4px;
+            transform: translateY(-50%);
+        }
+
+        .timeline-now {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 20px;
+            height: 20px;
+            background: var(--accent-blue);
+            border-radius: 50%;
+            transition: left 0.1s linear;
+            z-index: 2;
+        }
+
+        .timeline-gap {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            height: 8px;
+            background: var(--accent-orange);
+            border-radius: 4px;
+            opacity: 0.7;
+        }
+
+        .timeline-expiry {
+            position: absolute;
+            top: 50%;
+            right: 40px;
+            transform: translateY(-50%);
+            width: 20px;
+            height: 20px;
+            background: var(--accent-red);
+            border-radius: 50%;
+        }
+
+        .timeline-labels {
+            position: absolute;
+            bottom: 15px;
+            left: 40px;
+            right: 40px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .per-formula {
+            background: var(--bg-card);
+            padding: 25px 40px;
+            border-radius: 15px;
+            font-family: 'Consolas', monospace;
+            font-size: 1.3rem;
+        }
+
+        .per-params {
+            display: flex;
+            gap: 30px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .per-param {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .per-param label {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        .per-param input {
+            width: 100px;
+            padding: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            background: var(--bg-secondary);
+            color: white;
+            text-align: center;
+            font-size: 1rem;
+        }
+
+        .per-result {
+            font-size: 1.2rem;
+            color: var(--accent-green);
+        }
+
+        /* Stats table */
+        .stats-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        .stats-table th,
+        .stats-table td {
+            padding: 15px 20px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .stats-table th {
+            background: rgba(74, 158, 255, 0.2);
+            font-weight: 600;
+            color: var(--accent-blue);
+        }
+
+        .stats-table tr:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .badge-green {
+            background: rgba(0, 212, 170, 0.2);
+            color: var(--accent-green);
+        }
+
+        .badge-red {
+            background: rgba(255, 107, 107, 0.2);
+            color: var(--accent-red);
+        }
+
+        .badge-blue {
+            background: rgba(74, 158, 255, 0.2);
+            color: var(--accent-blue);
+        }
+
+        /* Demo slide */
+        .demo-commands {
+            background: #1a1a2e;
+            border-radius: 15px;
+            padding: 25px;
+            font-family: 'Consolas', monospace;
+            font-size: 0.95rem;
+            width: 100%;
+            max-width: 800px;
+        }
+
+        .demo-commands .prompt {
+            color: var(--accent-green);
+        }
+
+        .demo-commands .command {
+            color: var(--text-primary);
+            margin-left: 10px;
+        }
+
+        .demo-commands .comment {
+            color: var(--text-secondary);
+            font-style: italic;
+        }
+
+        .demo-step {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 8px;
+            transition: background 0.3s ease;
+        }
+
+        .demo-step:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        /* Recommendation matrix */
+        .matrix-table {
+            width: 100%;
+            font-size: 0.95rem;
+        }
+
+        .matrix-table th {
+            background: var(--gradient-1);
+            padding: 12px;
+        }
+
+        .matrix-table td {
+            padding: 12px;
+            vertical-align: top;
+        }
+
+        /* Key finding boxes */
+        .key-findings {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 25px;
+            width: 100%;
+            max-width: 1100px;
+        }
+
+        .finding-box {
+            background: var(--bg-card);
+            border-radius: 15px;
+            padding: 25px;
+            border-left: 4px solid var(--accent-blue);
+        }
+
+        .finding-box.success {
+            border-left-color: var(--accent-green);
+        }
+
+        .finding-box.warning {
+            border-left-color: var(--accent-orange);
+        }
+
+        .finding-box.danger {
+            border-left-color: var(--accent-red);
+        }
+
+        .finding-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .finding-stat {
+            font-size: 2rem;
+            font-weight: 700;
+            background: var(--gradient-1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+
+        /* Architecture diagram */
+        .architecture {
+            display: flex;
+            align-items: center;
+            gap: 30px;
+            padding: 30px;
+        }
+
+        .arch-box {
+            background: var(--bg-card);
+            border-radius: 15px;
+            padding: 25px 35px;
+            text-align: center;
+            min-width: 150px;
+        }
+
+        .arch-box.highlight-box {
+            background: var(--gradient-1);
+            box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);
+        }
+
+        .arch-arrow {
+            font-size: 2rem;
+            color: var(--accent-blue);
+        }
+
+        .arch-label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-top: 8px;
+        }
+
+        /* Q&A slide */
+        .qa-content {
+            text-align: center;
+        }
+
+        .qa-icon {
+            font-size: 5rem;
+            margin-bottom: 30px;
+        }
+
+        .contact-info {
+            margin-top: 40px;
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+        }
+
+        /* Side by side charts */
+        .charts-row {
+            display: flex;
+            gap: 30px;
+            width: 100%;
+            max-width: 1200px;
+        }
+
+        .chart-half {
+            flex: 1;
+            background: var(--bg-card);
+            border-radius: 15px;
+            padding: 20px;
+        }
+
+        /* Speaker notes (hidden by default, press 'S') */
+        .speaker-notes {
+            display: none;
+            position: fixed;
+            bottom: 60px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.9);
+            padding: 20px 30px;
+            border-radius: 10px;
+            max-width: 800px;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            z-index: 1000;
+        }
+
+        .speaker-notes.visible {
+            display: block;
+        }
+
+        /* Two column layout */
+        .two-cols {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 40px;
+            width: 100%;
+            max-width: 1200px;
+        }
+
+        .code-block {
+            background: #1a1a2e;
+            border-radius: 10px;
+            padding: 20px;
+            font-family: 'Consolas', monospace;
+            font-size: 0.9rem;
+            overflow-x: auto;
+        }
+
+        .code-keyword {
+            color: #c792ea;
+        }
+
+        .code-string {
+            color: #c3e88d;
+        }
+
+        .code-comment {
+            color: #676e95;
+        }
+
+        .code-number {
+            color: #f78c6c;
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 1200px) {
+            .slide {
+                padding: 40px;
+            }
+
+            .slide-title {
+                font-size: 2.5rem;
+            }
+
+            .content {
+                flex-direction: column;
+            }
+
+            .two-cols {
+                grid-template-columns: 1fr;
+            }
+
+            .key-findings {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="presentation">
+        <!-- Slide 1: Title -->
+        <div class="slide title-slide active"
+            data-notes="Welcome everyone. Today I'll present our evaluation of two cutting-edge caching algorithms.">
+            <div class="main-title">Empirical Evaluation of SIEVE & PER</div>
+            <div class="slide-subtitle">Cache Eviction and Stampede Prevention in High-Throughput Systems</div>
+            <div class="course-info">CMPE 273 - Enterprise Distributed Systems</div>
+            <div class="author">December 2025</div>
+        </div>
+
+        <!-- Slide 2: The Problem -->
+        <div class="slide" data-notes="Caching is everywhere, but two problems remain unsolved. Let me explain each.">
+            <h1 class="slide-title">The Problem</h1>
+            <div class="content">
+                <div class="card">
+                    <div class="card-title">🔄 The Eviction Problem</div>
+                    <ul>
+                        <li><span class="highlight-red">Scan pollution</span> — crawlers & batch jobs evict hot data
+                        </li>
+                        <li>LRU treats all accesses equally</li>
+                        <li>One-hit-wonders push out frequently-accessed items</li>
+                        <li>Up to <span class="highlight">50%</span> of requests may be one-time accesses</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title">⚡ The Stampede Problem</div>
+                    <ul>
+                        <li><span class="highlight-red">Thundering herd</span> on cache expiry</li>
+                        <li>100s of requests hit expired key simultaneously</li>
+                        <li>All trigger backend calls → system overload</li>
+                        <li>Can cascade into <span class="highlight-red">death spiral</span></li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 3: Research Questions -->
+        <div class="slide" data-notes="We formulated three research questions to guide our empirical study.">
+            <h1 class="slide-title">Research Questions</h1>
+            <div class="content-full">
+                <div class="card" style="max-width: 900px; margin: 0 auto;">
+                    <ul style="font-size: 1.15rem;">
+                        <li><span class="highlight-blue">RQ1 (Eviction):</span> Does SIEVE achieve meaningfully higher
+                            hit ratio than LRU under scan-heavy workloads?</li>
+                        <li><span class="highlight-blue">RQ2 (Stampede):</span> How do Naive TTL, Coalescing, and PER
+                            compare under high concurrency? Where does PER fail?</li>
+                        <li><span class="highlight-blue">RQ3 (Trade-offs):</span> When does algorithmic complexity
+                            overhead outweigh the benefits?</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 4: SIEVE Background Theory -->
+        <div class="slide" data-notes="SIEVE algorithm details from the NSDI'24 paper.">
+            <h1 class="slide-title">SIEVE Algorithm Theory (NSDI'24)</h1>
+            <div class="content">
+                <div class="card">
+                    <div class="card-title">Key Innovation</div>
+                    <ul>
+                        <li><span class="highlight">Lazy Promotion</span>: On hit, only set visited=1 (O(1), no
+                            pointer updates)</li>
+                        <li><span class="highlight">Quick Demotion</span>: New items start with visited=0 (scan
+                            resistant)</li>
+                        <li><span class="highlight">Hand Sweep</span>: One pointer walks through, evicting first
+                            visited=0</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title">Why It Outperforms LRU</div>
+                    <ul>
+                        <li><span class="highlight-red">One-hit-wonders</span> never get promoted → evicted quickly
+                        </li>
+                        <li><span class="highlight-green">Popular items</span> accumulate hits → always survive</li>
+                        <li><span class="highlight-blue">Lower overhead</span>: No list reordering on every hit</li>
+                        <li>Paper shows 42% better hit ratio on some workloads</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 5: PER Background Theory -->
+        <div class="slide" data-notes="PER/XFetch algorithm details from the VLDB'15 paper.">
+            <h1 class="slide-title">PER Algorithm Theory (VLDB'15)</h1>
+            <div class="content">
+                <div class="card">
+                    <div class="card-title">The XFetch Formula</div>
+                    <div class="code-block" style="font-size: 1.2rem; text-align: center;">
+                        gap = δ × β × ln(1/U)<br><br>
+                        <span style="color:#888">δ = backend latency (measured)</span><br>
+                        <span style="color:#888">β = tuning (default 1.0)</span><br>
+                        <span style="color:#888">U = random(0, 1)</span>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">How It Prevents Stampede</div>
+                    <ul>
+                        <li>Each client calculates a different gap (random U)</li>
+                        <li>Requests spread out across time window</li>
+                        <li><span class="highlight-green">Winner refreshes</span>, others get stale value</li>
+                        <li><span class="highlight-red">Critical failure</span>: When δ > TTL, enters death spiral
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 6: Coalescing Theory -->
+        <div class="slide" data-notes="Request Coalescing using computeIfAbsent pattern.">
+            <h1 class="slide-title">Request Coalescing Theory</h1>
+            <div class="content">
+                <div class="card">
+                    <div class="card-title">The Problem It Solves</div>
+                    <ul>
+                        <li>100 threads hit expired key simultaneously</li>
+                        <li>Without coalescing: 100 backend calls!</li>
+                        <li><span class="highlight-green">With coalescing: 1 call, 99 wait</span></li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title">Java Implementation Pattern</div>
+                    <div class="code-block" style="font-size: 0.9rem;">
+                        future = inFlight.<span class="code-keyword">computeIfAbsent</span>(key, k → {<br>
+                        &nbsp;&nbsp;<span class="code-comment">// Only first thread enters</span><br>
+                        &nbsp;&nbsp;return CompletableFuture.supplyAsync(recompute);<br>
+                        });<br>
+                        return future.get(); <span class="code-comment">// All wait on same future</span>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <span class="badge badge-green">99%+ backend reduction</span>
+                        <span class="badge badge-blue">Essential for production</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 7: SIEVE Algorithm Demo -->
+        <div class="slide"
+            data-notes="SIEVE is beautifully simple. Let me show you how it works with an interactive demo.">
+            <h1 class="slide-title">SIEVE Algorithm (NSDI'24)</h1>
+            <div class="slide-subtitle">Simpler than LRU, but smarter</div>
+            <div class="sieve-demo">
+                <div class="sieve-cache" id="sieveCache">
+                    <!-- Cache slots will be rendered by JS -->
+                </div>
+                <div class="sieve-log" id="sieveLog">Click buttons to see SIEVE in action</div>
+                <div class="sieve-controls">
+                    <button class="sieve-btn primary" onclick="sieveHit()">🔥 Hit Random Key</button>
+                    <button class="sieve-btn primary" onclick="sieveInsert()">➕ Insert New Key</button>
+                    <button class="sieve-btn secondary" onclick="sieveReset()">🔄 Reset</button>
+                </div>
+                <div style="display: flex; gap: 40px; margin-top: 10px;">
+                    <div><span class="badge badge-green">● visited=true</span> Survives sweep</div>
+                    <div><span class="badge badge-red">● visited=false</span> Evicted on sweep</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 8: SIEVE Implementation Code -->
+        <div class="slide" data-notes="Key code from SieveEvictionStrategy.java showing the simplicity">
+            <h1 class="slide-title">💻 SIEVE Implementation</h1>
+            <div class="two-cols">
+                <div class="card">
+                    <div class="card-title">onHit() - O(1) operation</div>
+                    <pre style="background:#1a1a2e; border-radius:10px; padding:15px; font-size:0.8rem; color:#e0e0e0;"><code><span style="color:#c792ea">public void</span> onHit(String key) {
+  Node node = nodeMap.get(key);
+  <span style="color:#c792ea">if</span> (node != <span style="color:#c792ea">null</span>) {
+    node.visited = <span style="color:#c792ea">true</span>;
+    <span style="color:#676e95">// That's it! No list reorder</span>
+  }
+}</code></pre>
+                    <div style="margin-top: 10px;">
+                        <span class="badge badge-green">⚡ O(1) always</span>
+                        <span class="badge badge-blue">No lock contention</span>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">selectVictim() - Hand sweep</div>
+                    <pre
+                        style="background:#1a1a2e; border-radius:10px; padding:15px; font-size:0.75rem; color:#e0e0e0;"><code><span style="color:#c792ea">while</span> (hand != <span style="color:#c792ea">null</span>) {
+  <span style="color:#c792ea">if</span> (hand.visited) {
+    hand.visited = <span style="color:#c792ea">false</span>; 
+    <span style="color:#676e95">// Second chance</span>
+    hand = hand.prev;
+  } <span style="color:#c792ea">else</span> {
+    removeNode(hand);
+    <span style="color:#676e95">// Evict this one</span>
+    <span style="color:#c792ea">return</span> hand.key;
+  }
+}</code></pre>
+                    <div style="margin-top: 10px;">
+                        <span class="badge badge-orange">FIFO with 2nd chance</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 9: LRU vs SIEVE Code Comparison -->
+        <div class="slide" data-notes="Side-by-side comparison showing why SIEVE has less lock contention">
+            <h1 class="slide-title">💻 LRU vs SIEVE: The Difference</h1>
+            <div class="two-cols">
+                <div class="card">
+                    <div class="card-title" style="color: #ff6b6b;">🐌 LRU onHit()</div>
+                    <pre
+                        style="background:#1a1a2e; border-radius:10px; padding:15px; font-size:0.75rem; color:#e0e0e0;"><code>lock.lock();
+<span style="color:#c792ea">try</span> {
+  <span style="color:#c792ea">if</span> (order.containsKey(key)) {
+    order.get(key); 
+    <span style="color:#676e95">// LinkedHashMap internally:</span>
+    <span style="color:#676e95">// 1. Remove from current pos</span>
+    <span style="color:#676e95">// 2. Add to end of list</span>
+    <span style="color:#676e95">// 3. Update 4 pointers!</span>
+  }
+} <span style="color:#c792ea">finally</span> { lock.unlock(); }</code></pre>
+                    <ul style="font-size: 0.85rem; margin-top: 10px;">
+                        <li><span class="highlight-red">Every hit</span> = pointer updates</li>
+                        <li>Lock held during list manipulation</li>
+                        <li>Contention under high QPS</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title" style="color: #00d4aa;">⚡ SIEVE onHit()</div>
+                    <pre
+                        style="background:#1a1a2e; border-radius:10px; padding:15px; font-size:0.75rem; color:#e0e0e0;"><code>lock.lock();
+<span style="color:#c792ea">try</span> {
+  Node n = nodeMap.get(key);
+  <span style="color:#c792ea">if</span> (n != <span style="color:#c792ea">null</span>) {
+    n.visited = <span style="color:#c792ea">true</span>;
+    <span style="color:#676e95">// Just one boolean flip!</span>
+    <span style="color:#676e95">// No pointer updates</span>
+    <span style="color:#676e95">// No list reordering</span>
+  }
+} <span style="color:#c792ea">finally</span> { lock.unlock(); }</code></pre>
+                    <ul style="font-size: 0.85rem; margin-top: 10px;">
+                        <li><span class="highlight-green">Every hit</span> = 1 boolean write</li>
+                        <li>Minimal lock hold time</li>
+                        <li>Scales better under load</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 10: PER Algorithm Demo -->
+        <div class="slide"
+            data-notes="PER uses probability to stagger refresh requests. This interactive demo shows how the gap is calculated.">
+            <h1 class="slide-title">Probabilistic Early Refresh (VLDB'15)</h1>
+            <div class="slide-subtitle">Refresh BEFORE expiry to prevent stampede</div>
+            <div class="per-demo">
+                <div class="per-formula">
+                    gap = -δ × β × ln(<span id="perU">0.5</span>) = <span id="perGap" class="highlight">69.3ms</span>
+                </div>
+
+                <!-- Simpler timeline using a table-like layout -->
+                <div style="width: 100%; max-width: 700px; margin: 20px auto;">
+                    <!-- Labels -->
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 0.9rem;">
+                        <span style="color:#4a9eff;">⏱️ t=0</span>
+                        <span style="color:#ff6b6b;">TTL=<span id="expiryLabel2">1000</span>ms</span>
+                    </div>
+
+                    <!-- Main timeline bar -->
+                    <div
+                        style="position: relative; height: 50px; background: #333; border-radius: 8px; overflow: hidden;">
+                        <!-- Time elapsed (green) - grows from left -->
+                        <div id="perTimeElapsed"
+                            style="position: absolute; left: 0; top: 0; height: 100%; background: linear-gradient(90deg, #4a9eff, #00d4aa); width: 0%; transition: width 0.1s;">
+                        </div>
+
+                        <!-- Gap zone (orange) - starts from left, shows how far gap extends -->
+                        <div id="perGapZone"
+                            style="position: absolute; left: 0; top: 0; height: 100%; background: #ffa94d; opacity: 0.7; transition: width 0.1s;">
+                        </div>
+
+                        <!-- Trigger line - where gap zone starts -->
+                        <div id="perTriggerLine"
+                            style="position: absolute; top: 0; height: 100%; width: 2px; background: #fff; z-index: 5;">
+                        </div>
+
+                        <!-- Now position indicator -->
+                        <div id="perNowIndicator"
+                            style="position: absolute; top: -8px; width: 20px; height: 20px; background: #4a9eff; border-radius: 50%; border: 3px solid #fff; transform: translateX(-50%); z-index: 10; left: 0%;">
+                        </div>
+                    </div>
+
+                    <!-- Status -->
+                    <div style="display: flex; justify-content: space-between; margin-top: 10px; font-size: 0.85rem;">
+                        <span>now = <span id="perNowValue">0</span>ms</span>
+                        <span style="color: #ffa94d;">← gap zone: <span id="perGapWidth">69</span>ms →</span>
+                        <span>trigger at <span id="perTriggerAt">931</span>ms</span>
+                    </div>
+                </div>
+
+                <div class="per-params">
+                    <div class="per-param">
+                        <label>δ (latency)</label>
+                        <input type="number" id="perDelta" value="100" onchange="updatePER2()"> ms
+                    </div>
+                    <div class="per-param">
+                        <label>β</label>
+                        <input type="number" id="perBeta" value="1.0" step="0.1" onchange="updatePER2()">
+                    </div>
+                    <div class="per-param">
+                        <label>TTL</label>
+                        <input type="number" id="perTTL" value="1000" step="100" onchange="updatePER2()"> ms
+                    </div>
+                    <div class="per-param">
+                        <button class="sieve-btn primary" onclick="randomizePER2()">🎲 Random U</button>
+                    </div>
+                    <div class="per-param">
+                        <button class="sieve-btn secondary" onclick="animatePER2()">▶ Animate</button>
+                    </div>
+                </div>
+                <div class="per-result" id="perResult">
+                    When time enters orange zone → Trigger async refresh, return stale
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 11: PER Implementation Code -->
+        <div class="slide" data-notes="Key code from ProbabilisticEarlyRefreshStrategy.java">
+            <h1 class="slide-title">💻 PER Implementation</h1>
+            <div class="content">
+                <div class="card" style="max-width: 850px; margin: 0 auto;">
+                    <div class="card-title">Core PER Logic</div>
+                    <pre style="background:#1a1a2e; border-radius:10px; padding:20px; font-size:0.8rem; color:#e0e0e0;"><code><span style="color:#c792ea">if</span> (entry != <span style="color:#c792ea">null</span> && entry.expiryTime > now) {
+    <span style="color:#676e95">// 1. Calculate gap using XFetch formula</span>
+    <span style="color:#c792ea">double</span> delta = entry.computeTimeMs;  <span style="color:#676e95">// Measured latency</span>
+    <span style="color:#c792ea">double</span> U = Math.random();            <span style="color:#676e95">// 0.0 to 1.0</span>
+    <span style="color:#c792ea">double</span> gap = delta * beta * Math.log(1/U);
+    
+    <span style="color:#676e95">// 2. Should we refresh early?</span>
+    <span style="color:#c792ea">if</span> (now + gap >= entry.expiryTime) {
+        <span style="color:#676e95">// 3. Async refresh - DON'T BLOCK the user!</span>
+        executor.submit(() -> refreshCache(key));
+    }
+    
+    <span style="color:#c792ea">return</span> entry.value;  <span style="color:#676e95">// Return cached value immediately</span>
+}</code></pre>
+                    <div style="display: flex; gap: 15px; margin-top: 15px; flex-wrap: wrap;">
+                        <span class="badge badge-green">⚡ Low latency</span>
+                        <span class="badge badge-blue">🎲 Staggered refreshes</span>
+                        <span class="badge badge-orange">🔄 Background update</span>
+                    </div>
+                </div>
+                <div class="card" style="max-width: 850px; margin: 20px auto 0;">
+                    <div class="card-title" style="color: #ff6b6b;">⚠️ Known Failure Mode</div>
+                    <p style="font-size: 0.95rem;">When <code>δ (delta) > TTL</code>: gap always triggers → all requests
+                        try to refresh → backend overload → δ increases → death spiral</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 12: System Architecture -->
+        <div class="slide" data-notes="Here's our middleware architecture. Spring Boot app with pluggable strategies.">
+            <h1 class="slide-title">System Architecture</h1>
+            <div class="architecture">
+                <div class="arch-box">
+                    <div style="font-size: 2rem;">📱</div>
+                    <div>Client</div>
+                    <div class="arch-label">HTTP GET</div>
+                </div>
+                <div class="arch-arrow">→</div>
+                <div class="arch-box highlight-box">
+                    <div style="font-size: 2rem;">🔧</div>
+                    <div>Cache Middleware</div>
+                    <div class="arch-label">Java/Spring Boot</div>
+                </div>
+                <div class="arch-arrow">→</div>
+                <div class="arch-box">
+                    <div style="font-size: 2rem;">🗄️</div>
+                    <div>Backend</div>
+                    <div class="arch-label">Simulated latency</div>
+                </div>
+            </div>
+            <div class="content" style="margin-top: 30px;">
+                <div class="card">
+                    <div class="card-title">Eviction Strategies</div>
+                    <ul>
+                        <li><span class="highlight">LRU</span> — LinkedHashMap baseline</li>
+                        <li><span class="highlight">SIEVE</span> — Visited bit + hand sweep</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title">Refresh Strategies</div>
+                    <ul>
+                        <li><span class="highlight">Naive</span> — Simple TTL expiry</li>
+                        <li><span class="highlight">Coalescing</span> — computeIfAbsent</li>
+                        <li><span class="highlight">PER</span> — Probabilistic early refresh</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 7: Experimental Setup -->
+        <div class="slide" data-notes="138 controlled experiments across 3 scenarios. Let's look at the results.">
+            <h1 class="slide-title">Experimental Setup</h1>
+            <div class="content-full">
+                <div style="display: flex; justify-content: center; gap: 30px; margin-bottom: 30px;">
+                    <div class="finding-box">
+                        <div class="finding-stat">138</div>
+                        <div class="finding-title">Total Experiments</div>
+                    </div>
+                    <div class="finding-box">
+                        <div class="finding-stat">3</div>
+                        <div class="finding-title">Scenarios</div>
+                    </div>
+                    <div class="finding-box">
+                        <div class="finding-stat">5</div>
+                        <div class="finding-title">Cache Modes</div>
+                    </div>
+                </div>
+                <table class="stats-table" style="max-width: 900px; margin: 0 auto;">
+                    <tr>
+                        <th>Scenario</th>
+                        <th>Focus</th>
+                        <th>Key Variable</th>
+                        <th>Tests</th>
+                    </tr>
+                    <tr>
+                        <td><span class="badge badge-blue">A</span> Eviction</td>
+                        <td>SIEVE vs LRU hit ratio</td>
+                        <td>Scan ratio, cache size, skew</td>
+                        <td>69</td>
+                    </tr>
+                    <tr>
+                        <td><span class="badge badge-green">B</span> Stampede</td>
+                        <td>Naive vs Coalescing vs PER</td>
+                        <td>Latency/TTL ratio, threads</td>
+                        <td>60</td>
+                    </tr>
+                    <tr>
+                        <td><span class="badge badge-red">C</span> Realistic</td>
+                        <td>Multi-phase workload</td>
+                        <td>Traffic skew (80/20 → 99/1)</td>
+                        <td>9</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+
+        <!-- Slide 8: RQ1 - Scan Resistance -->
+        <div class="slide" data-notes="SIEVE beats LRU across all scan ratios. Even at 0% scan, SIEVE wins by 11%!">
+            <h1 class="slide-title">RQ1: Scan Resistance</h1>
+            <div class="slide-subtitle">SIEVE vs LRU Hit Ratio by Scan Traffic</div>
+            <div class="chart-container">
+                <canvas id="scanChart"></canvas>
+            </div>
+            <div style="margin-top: 20px; text-align: center;">
+                <span class="badge badge-green">Key Finding: SIEVE +11% even at 0% scan</span>
+            </div>
+        </div>
+
+        <!-- Slide 9: RQ1 - Cache Size -->
+        <div class="slide"
+            data-notes="SIEVE advantage is highest on small caches. When memory is scarce, every eviction matters.">
+            <h1 class="slide-title">RQ1: Cache Size Impact</h1>
+            <div class="slide-subtitle">Smaller cache = bigger SIEVE advantage</div>
+            <div class="chart-container">
+                <canvas id="cacheSizeChart"></canvas>
+            </div>
+            <div style="margin-top: 20px; text-align: center;">
+                <span class="badge badge-blue">Trend: +10% at 0.5% cache → +5% at 10% cache</span>
+            </div>
+        </div>
+
+        <!-- Slide 10: RQ2 - Normal Conditions -->
+        <div class="slide"
+            data-notes="Under normal conditions with latency much less than TTL, PER shines with 2.4x P99 improvement.">
+            <h1 class="slide-title">RQ2: Normal Conditions</h1>
+            <div class="slide-subtitle">Latency=100ms, TTL=1000ms (ratio=0.1)</div>
+            <div class="charts-row">
+                <div class="chart-half">
+                    <canvas id="normalBackendChart"></canvas>
+                </div>
+                <div class="chart-half">
+                    <canvas id="normalLatencyChart"></canvas>
+                </div>
+            </div>
+            <div style="margin-top: 20px; display: flex; justify-content: center; gap: 20px;">
+                <span class="badge badge-green">Coalescing: 27 backend calls (99.95% reduction)</span>
+                <span class="badge badge-blue">PER: P99 46ms (2.4× better than Naive)</span>
+            </div>
+        </div>
+
+        <!-- Slide 11: RQ2 - Death Spiral -->
+        <div class="slide"
+            data-notes="This is the critical finding. When backend latency exceeds TTL, PER actually INCREASES backend load!">
+            <h1 class="slide-title">RQ2: The Death Spiral ⚠️</h1>
+            <div class="slide-subtitle">Latency=500ms, TTL=200ms (ratio=2.5) — PER's failure mode</div>
+            <div class="chart-container" style="max-width: 700px;">
+                <canvas id="deathSpiralChart"></canvas>
+            </div>
+            <div style="margin-top: 20px; display: flex; justify-content: center; gap: 20px;">
+                <span class="badge badge-red">PER: 35,156 backend calls (37% MORE than Naive!)</span>
+                <span class="badge badge-green">Coalescing: Only survivor</span>
+            </div>
+        </div>
+
+        <!-- Slide 12: RQ3 - Crossover -->
+        <div class="slide"
+            data-notes="At extreme skew, simple LRU+Naive actually wins. Know your workload before over-engineering.">
+            <h1 class="slide-title">RQ3: The Crossover Point</h1>
+            <div class="slide-subtitle">When does simple win?</div>
+            <div class="chart-container">
+                <canvas id="crossoverChart"></canvas>
+            </div>
+            <div style="margin-top: 20px; text-align: center;">
+                <span class="badge badge-blue">Crossover at 95/5 skew — LRU+Naive wins at extreme skew</span>
+            </div>
+        </div>
+
+        <!-- Slide 13: Live Demo -->
+        <div class="slide"
+            data-notes="Let me show you the actual system. I'll demonstrate mode switching and compare results live.">
+            <h1 class="slide-title">🚀 Live Demo</h1>
+            <div class="demo-commands">
+                <div class="demo-step">
+                    <span class="comment"># Step 1: Start the server</span><br>
+                    <span class="prompt">$</span><span class="command">java -jar
+                        target/caching-middleware-0.0.1-SNAPSHOT.jar &</span>
+                </div>
+                <div class="demo-step">
+                    <span class="comment"># Step 2: Configure LRU + Naive mode</span><br>
+                    <span class="prompt">$</span><span class="command">curl
+                        "http://localhost:8080/config?mode=M1&capacity=100&ttl=5000"</span>
+                </div>
+                <div class="demo-step">
+                    <span class="comment"># Step 3: Run quick load test</span><br>
+                    <span class="prompt">$</span><span class="command">./demo_lru.sh</span>
+                </div>
+                <div class="demo-step">
+                    <span class="comment"># Step 4: Switch to SIEVE and compare</span><br>
+                    <span class="prompt">$</span><span class="command">curl
+                        "http://localhost:8080/config?mode=M4&capacity=100&ttl=5000"</span>
+                </div>
+                <div class="demo-step">
+                    <span class="comment"># Step 5: Demonstrate stampede with Coalescing</span><br>
+                    <span class="prompt">$</span><span class="command">./demo_stampede.sh</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 14: Recommendations -->
+        <div class="slide" data-notes="Here's our practical strategy selection matrix based on the experiments.">
+            <h1 class="slide-title">Strategy Selection Matrix</h1>
+            <div class="content-full" style="overflow-x: auto;">
+                <table class="stats-table matrix-table">
+                    <tr>
+                        <th>Condition</th>
+                        <th>Eviction</th>
+                        <th>Refresh</th>
+                        <th>Why</th>
+                    </tr>
+                    <tr>
+                        <td>Scan-heavy traffic (&gt;25%)</td>
+                        <td><span class="badge badge-green">SIEVE</span></td>
+                        <td>Naive</td>
+                        <td>Quick demotion prevents pollution</td>
+                    </tr>
+                    <tr>
+                        <td>Small cache (&lt;2%)</td>
+                        <td><span class="badge badge-green">SIEVE</span></td>
+                        <td>PER</td>
+                        <td>Every eviction matters</td>
+                    </tr>
+                    <tr>
+                        <td>Latency ≪ TTL</td>
+                        <td>Any</td>
+                        <td><span class="badge badge-blue">PER</span></td>
+                        <td>Proactive refresh reduces P99</td>
+                    </tr>
+                    <tr>
+                        <td>Latency ≈ TTL</td>
+                        <td>Any</td>
+                        <td><span class="badge badge-green">Coalescing</span></td>
+                        <td>PER starts failing</td>
+                    </tr>
+                    <tr>
+                        <td>Latency &gt; TTL</td>
+                        <td>Any</td>
+                        <td><span class="badge badge-red">Coalescing ONLY</span></td>
+                        <td>PER collapses!</td>
+                    </tr>
+                    <tr>
+                        <td>Extreme skew (99/1)</td>
+                        <td>LRU</td>
+                        <td>Naive</td>
+                        <td>Simple wins; overhead not justified</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+
+        <!-- Slide 15: Key Findings -->
+        <div class="slide" data-notes="Let me summarize our four key findings from 138 experiments.">
+            <h1 class="slide-title">Key Findings</h1>
+            <div class="key-findings">
+                <div class="finding-box success">
+                    <div class="finding-stat">+5-11%</div>
+                    <div class="finding-title">SIEVE Hit Ratio Improvement</div>
+                    <div>Beats LRU even on pure Zipfian workloads</div>
+                </div>
+                <div class="finding-box success">
+                    <div class="finding-stat">2.4×</div>
+                    <div class="finding-title">PER P99 Latency Reduction</div>
+                    <div>Under normal conditions (δ ≪ TTL)</div>
+                </div>
+                <div class="finding-box danger">
+                    <div class="finding-stat">+37%</div>
+                    <div class="finding-title">PER Backend Load Increase</div>
+                    <div>When δ > TTL — critical failure mode!</div>
+                </div>
+                <div class="finding-box warning">
+                    <div class="finding-stat">99%+</div>
+                    <div class="finding-title">Coalescing Backend Reduction</div>
+                    <div>Essential safety net for production</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 16: Conclusion & Q&A -->
+        <div class="slide"
+            data-notes="To conclude: SIEVE and PER deliver real benefits, but understand their limits. Questions?">
+            <h1 class="slide-title">Conclusion</h1>
+            <div class="content-full" style="text-align: center; max-width: 800px;">
+                <div class="card" style="text-align: left; margin-bottom: 40px;">
+                    <ul style="font-size: 1.1rem;">
+                        <li><span class="highlight">SIEVE</span> is a drop-in LRU replacement with real benefits
+                        </li>
+                        <li><span class="highlight">PER</span> works well but has hidden failure modes</li>
+                        <li><span class="highlight">Coalescing</span> should be your production baseline</li>
+                        <li><span class="highlight-orange">Know your workload</span> before over-engineering</li>
+                    </ul>
+                </div>
+                <div class="qa-icon">❓</div>
+                <h2 style="font-size: 2rem; margin-bottom: 20px;">Questions?</h2>
+                <div class="contact-info">
+                    <p>Code: <span class="highlight-blue">github.com/aliucer/caching-middleware</span></p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 17: References -->
+        <div class="slide" data-notes="Here are the academic sources for the algorithms we evaluated.">
+            <h1 class="slide-title">References</h1>
+            <div class="content-full" style="max-width: 1000px;">
+                <div class="card" style="margin-bottom: 20px;">
+                    <div class="card-title">📄 SIEVE Algorithm</div>
+                    <p style="font-size: 1rem; line-height: 1.8;">
+                        <strong>Zhang, Y., et al.</strong> (2024).
+                        <em>"SIEVE is Simpler than LRU: an Efficient Turn-Key Eviction Algorithm for Web Caches"</em>.
+                        In Proceedings of the <span class="highlight-blue">21st USENIX Symposium on Networked Systems
+                            Design and Implementation (NSDI '24)</span>.
+                        <br><br>
+                        <span style="color: #888;">🔗
+                            https://www.usenix.org/conference/nsdi24/presentation/zhang-yazhuo</span>
+                    </p>
+                </div>
+                <div class="card" style="margin-bottom: 20px;">
+                    <div class="card-title">📄 Probabilistic Early Refresh (XFetch)</div>
+                    <p style="font-size: 1rem; line-height: 1.8;">
+                        <strong>Vattani, A., Chierichetti, F., & Lowenstein, K.</strong> (2015).
+                        <em>"Optimal Probabilistic Cache Stampede Prevention"</em>.
+                        In Proceedings of the <span class="highlight-blue">VLDB Endowment, Vol. 8, No. 8</span>.
+                        <br><br>
+                        <span style="color: #888;">🔗 https://www.vldb.org/pvldb/vol8/p886-vattani.pdf</span>
+                    </p>
+                </div>
+                <div class="card">
+                    <div class="card-title">📄 Request Coalescing Pattern</div>
+                    <p style="font-size: 1rem; line-height: 1.8;">
+                        Standard Java concurrent pattern using <code
+                            style="background:#333;padding:2px 6px;border-radius:4px;">ConcurrentHashMap.computeIfAbsent()</code>
+                        with <code style="background:#333;padding:2px 6px;border-radius:4px;">CompletableFuture</code>
+                        for deduplicating in-flight requests.
+                        <br><br>
+                        <span style="color: #888;">📚 Java Concurrency in Practice (Goetz et al., 2006)</span>
+                    </p>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Progress bar -->
+    <div class="progress-bar" id="progressBar"></div>
+
+    <!-- Slide counter -->
+    <div class="slide-counter" id="slideCounter">1 / 17</div>
+
+    <!-- Navigation hints -->
+    <div class="nav-hints">← → Arrow keys to navigate | S for speaker notes</div>
+
+    <!-- Speaker notes overlay -->
+    <div class="speaker-notes" id="speakerNotes"></div>
+
+    <script>
+        // Presentation navigation
+        let currentSlide = 0;
+        const slides = document.querySelectorAll('.slide');
+        const totalSlides = slides.length;
+        const progressBar = document.getElementById('progressBar');
+        const slideCounter = document.getElementById('slideCounter');
+        const speakerNotes = document.getElementById('speakerNotes');
+        let notesVisible = false;
+
+        function showSlide(index) {
+            slides.forEach((slide, i) => {
+                slide.classList.toggle('active', i === index);
+            });
+            progressBar.style.width = ((index + 1) / totalSlides * 100) + '%';
+            slideCounter.textContent = `${index + 1} / ${totalSlides}`;
+
+            // Update speaker notes
+            const notes = slides[index].dataset.notes;
+            speakerNotes.textContent = notes || '';
+        }
+
+        function nextSlide() {
+            if (currentSlide < totalSlides - 1) {
+                currentSlide++;
+                showSlide(currentSlide);
+            }
+        }
+
+        function prevSlide() {
+            if (currentSlide > 0) {
+                currentSlide--;
+                showSlide(currentSlide);
+            }
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight' || e.key === ' ') {
+                nextSlide();
+                e.preventDefault();
+            } else if (e.key === 'ArrowLeft') {
+                prevSlide();
+            } else if (e.key === 's' || e.key === 'S') {
+                notesVisible = !notesVisible;
+                speakerNotes.classList.toggle('visible', notesVisible);
+            }
+        });
+
+        // Initialize charts when DOM is ready
+        document.addEventListener('DOMContentLoaded', () => {
+            initCharts();
+            initSieveDemo();
+            showSlide(0);
+        });
+
+        // SIEVE Demo - Implements Algorithm 1 from NSDI'24 paper
+        // Structure: HEAD (index 0, left) ← → TAIL (index N-1, right)
+        // Hand sweeps: tail → head direction (using .prev)
+        // Insert: always at HEAD with visited=0
+        // Eviction: hand = victim.prev
+
+        let sieveCache = [];  // Array: index 0 = HEAD, last index = TAIL
+        let sieveHand = null; // Points to current position (index), null means start from tail
+        const CACHE_SIZE = 8;
+        let keyCounter = 0;
+
+        function initSieveDemo() {
+            sieveCache = [];
+            // Initialize with some keys, HEAD is left (index 0), TAIL is right
+            for (let i = 0; i < CACHE_SIZE; i++) {
+                sieveCache.push({ key: `K${i}`, visited: Math.random() > 0.5 });
+            }
+            keyCounter = CACHE_SIZE;
+            sieveHand = null; // Will start from tail on first eviction
+            renderSieveCache();
+        }
+
+        function renderSieveCache() {
+            const container = document.getElementById('sieveCache');
+            // Show HEAD label on left, TAIL on right
+            let html = '<div style="position:absolute;top:-25px;left:20px;font-size:0.8rem;color:#888;">HEAD</div>';
+            html += '<div style="position:absolute;top:-25px;right:20px;font-size:0.8rem;color:#888;">TAIL</div>';
+
+            html += sieveCache.map((slot, i) => `
+                <div class="cache-slot ${slot.visited ? 'visited' : 'not-visited'}" style="position:relative;">
+                    <span class="key">${slot.key}</span>
+                    <span class="visited-bit">v=${slot.visited ? '1' : '0'}</span>
+                </div>
+            `).join('');
+
+            // Hand pointer - show where hand is pointing
+            const handPos = sieveHand !== null ? sieveHand : CACHE_SIZE - 1;
+            html += `<div class="hand-pointer" style="left: ${handPos * 78 + 25}px;">👆</div>`;
+
+            container.innerHTML = html;
+        }
+
+        function sieveHit() {
+            if (sieveCache.length === 0) return;
+            // Random hit on an existing key
+            const hitIndex = Math.floor(Math.random() * sieveCache.length);
+            const hitKey = sieveCache[hitIndex].key;
+            sieveCache[hitIndex].visited = true;
+
+            document.getElementById('sieveLog').innerHTML =
+                `<b>HIT ${hitKey}</b>: Set visited=1 <span style="color:#888">(hand doesn't move, no list reorder!)</span>`;
+            renderSieveCache();
+        }
+
+        function sieveInsert() {
+            // Paper Algorithm 1: Find victim using hand sweep
+            let logMessages = [];
+
+            // Step 5-7: o ← p, if o is NULL then o ← tail
+            let o = sieveHand !== null ? sieveHand : sieveCache.length - 1;
+            logMessages.push(`Hand starts at index ${o} (${sieveCache[o].key})`);
+
+            // Step 8-12: while o.visited = 1 do second chance
+            let sweeps = 0;
+            while (sieveCache[o].visited && sweeps < CACHE_SIZE * 2) {
+                // Step 9: o.visited ← 0 (second chance)
+                logMessages.push(`${sieveCache[o].key} has v=1 → reset to v=0 (second chance)`);
+                sieveCache[o].visited = false;
+
+                // Step 10-12: o ← o.prev (toward head), wrap to tail if null
+                if (o > 0) {
+                    o = o - 1;  // Move toward head
+                } else {
+                    o = sieveCache.length - 1;  // Wrap to tail
+                }
+                sweeps++;
+            }
+
+            // Found victim at o (has visited=0)
+            const victim = sieveCache[o];
+            const victimKey = victim.key;
+            logMessages.push(`Found victim: ${victimKey} at index ${o} (v=0)`);
+
+            // Step 13: p ← o.prev (hand moves to victim's prev, toward head)
+            // If victim is at head (0), wrap to tail
+            const newHandPos = o > 0 ? o - 1 : sieveCache.length - 1;
+
+            // Step 14: Remove victim from list
+            sieveCache.splice(o, 1);
+
+            // Step 15-16: Insert new element at HEAD with visited=0
+            const newKey = `K${keyCounter++}`;
+            sieveCache.unshift({ key: newKey, visited: false });
+
+            // Adjust hand position since we removed and added elements
+            // After splice at o: indices >= o shift down
+            // After unshift: all indices shift up by 1
+            // Net effect for hand: newHandPos (relative to old array) becomes newHandPos + 1 - (o >= newHandPos ? 0 : 1)
+            // Simpler: hand points to what was o.prev, now shifted by unshift
+            sieveHand = newHandPos + 1;
+            if (sieveHand >= sieveCache.length) sieveHand = sieveCache.length - 1;
+
+            logMessages.push(`Evicted ${victimKey}, inserted ${newKey} at HEAD (v=0)`);
+            logMessages.push(`Hand → index ${sieveHand} (${sieveCache[sieveHand].key})`);
+
+            document.getElementById('sieveLog').innerHTML =
+                `<b>EVICT ${victimKey}</b> → <b>INSERT ${newKey}</b> at HEAD | Hand now at ${sieveCache[sieveHand].key}`;
+            renderSieveCache();
+        }
+
+        function sieveReset() {
+            initSieveDemo();
+            document.getElementById('sieveLog').innerHTML =
+                'Cache reset. <b>HEAD</b> = left (new inserts), <b>TAIL</b> = right. Click buttons to see SIEVE in action!';
+        }
+
+
+        // PER Demo v2 - Simple percentage-based visualization
+        // Gap zone is ALWAYS on the right side (uses CSS right:0)
+        // Time elapsed grows from left
+
+        let perAnimationId = null;
+        let perNowTime = 0;
+
+        function updatePER2() {
+            const delta = parseFloat(document.getElementById('perDelta').value) || 100;
+            const beta = parseFloat(document.getElementById('perBeta').value) || 1.0;
+            const TTL = parseFloat(document.getElementById('perTTL').value) || 1000;
+            const U = parseFloat(document.getElementById('perU').textContent) || 0.5;
+
+            // Calculate gap
+            const gap = -1 * delta * beta * Math.log(U);
+            const gapClamped = Math.min(gap, TTL); // Can't be larger than TTL
+
+            // Update displays
+            document.getElementById('perGap').textContent = gap.toFixed(1) + 'ms';
+            document.getElementById('expiryLabel2').textContent = TTL;
+            document.getElementById('perNowValue').textContent = Math.round(perNowTime);
+            document.getElementById('perGapWidth').textContent = Math.round(gapClamped);
+
+            const triggerTime = TTL - gapClamped;
+            document.getElementById('perTriggerAt').textContent = Math.round(triggerTime);
+
+            // Gap zone - shows the gap value as a bar from the LEFT
+            // Orange bar width = gap as percentage of TTL
+            // This visualizes: "gap extends this far from beginning"
+            const gapPercent = (gapClamped / TTL) * 100;
+
+            // Orange bar: starts at 0, width = gap percentage
+            document.getElementById('perGapZone').style.left = '0%';
+            document.getElementById('perGapZone').style.width = gapPercent + '%';
+
+            // Trigger line: marks where gap ends (the "early trigger threshold")
+            // Refresh triggers when: now >= TTL - gap, i.e., when now >= triggerTime
+            const triggerPercent = 100 - gapPercent;
+            document.getElementById('perTriggerLine').style.left = triggerPercent + '%';
+
+            // Time elapsed bar (grows from left)
+            const nowPercent = Math.min((perNowTime / TTL) * 100, 100);
+            document.getElementById('perTimeElapsed').style.width = nowPercent + '%';
+
+            // Now indicator position
+            document.getElementById('perNowIndicator').style.left = nowPercent + '%';
+
+            // Check if triggered
+            const triggered = perNowTime >= triggerTime;
+            document.getElementById('perResult').innerHTML = triggered
+                ? `<span class="highlight-red">🔄 REFRESH TRIGGERED!</span> Time entered the gap zone at ${Math.round(triggerTime)}ms`
+                : `⏳ Waiting... refresh triggers at ${Math.round(triggerTime)}ms (gap=${Math.round(gapClamped)}ms before expiry)`;
+        }
+
+        function randomizePER2() {
+            const U = Math.random() * 0.9 + 0.05;
+            document.getElementById('perU').textContent = U.toFixed(3);
+            perNowTime = 0;
+            updatePER2();
+        }
+
+        function animatePER2() {
+            if (perAnimationId) {
+                cancelAnimationFrame(perAnimationId);
+                perAnimationId = null;
+            }
+
+            const TTL = parseFloat(document.getElementById('perTTL').value) || 1000;
+            perNowTime = 0;
+            const startTime = performance.now();
+            const duration = 4000; // 4 seconds for animation
+
+            function animate(currentTime) {
+                const elapsed = currentTime - startTime;
+                perNowTime = Math.min((elapsed / duration) * TTL, TTL);
+                updatePER2();
+
+                if (elapsed < duration) {
+                    perAnimationId = requestAnimationFrame(animate);
+                } else {
+                    perAnimationId = null;
+                }
+            }
+
+            perAnimationId = requestAnimationFrame(animate);
+        }
+
+        // Initialize PER demo on load
+        document.addEventListener('DOMContentLoaded', () => {
+            setTimeout(updatePER2, 100);
+        });
+
+
+        // Charts
+        function initCharts() {
+            // Scan Resistance Chart
+            new Chart(document.getElementById('scanChart'), {
+                type: 'bar',
+                data: {
+                    labels: ['0% Scan', '10% Scan', '25% Scan', '50% Scan', '75% Scan'],
+                    datasets: [
+                        {
+                            label: 'LRU Hit Ratio',
+                            data: [33, 29, 23, 13, 5],
+                            backgroundColor: 'rgba(255, 107, 107, 0.7)',
+                            borderColor: 'rgba(255, 107, 107, 1)',
+                            borderWidth: 2
+                        },
+                        {
+                            label: 'SIEVE Hit Ratio',
+                            data: [44, 39, 32, 20, 8],
+                            backgroundColor: 'rgba(0, 212, 170, 0.7)',
+                            borderColor: 'rgba(0, 212, 170, 1)',
+                            borderWidth: 2
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { labels: { color: '#fff' } }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 50,
+                            title: { display: true, text: 'Hit Ratio (%)', color: '#fff' },
+                            ticks: { color: '#aaa' },
+                            grid: { color: 'rgba(255,255,255,0.1)' }
+                        },
+                        x: {
+                            ticks: { color: '#aaa' },
+                            grid: { color: 'rgba(255,255,255,0.1)' }
+                        }
+                    }
+                }
+            });
+
+            // Cache Size Chart
+            new Chart(document.getElementById('cacheSizeChart'), {
+                type: 'line',
+                data: {
+                    labels: ['0.5%', '1%', '2%', '5%', '10%'],
+                    datasets: [
+                        {
+                            label: 'LRU',
+                            data: [18, 22, 27, 34, 40],
+                            borderColor: 'rgba(255, 107, 107, 1)',
+                            backgroundColor: 'rgba(255, 107, 107, 0.2)',
+                            fill: true,
+                            tension: 0.3
+                        },
+                        {
+                            label: 'SIEVE',
+                            data: [28, 31, 36, 41, 45],
+                            borderColor: 'rgba(0, 212, 170, 1)',
+                            backgroundColor: 'rgba(0, 212, 170, 0.2)',
+                            fill: true,
+                            tension: 0.3
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { labels: { color: '#fff' } } },
+                    scales: {
+                        y: {
+                            title: { display: true, text: 'Hit Ratio (%)', color: '#fff' },
+                            ticks: { color: '#aaa' },
+                            grid: { color: 'rgba(255,255,255,0.1)' }
+                        },
+                        x: {
+                            title: { display: true, text: 'Cache Size (% of universe)', color: '#fff' },
+                            ticks: { color: '#aaa' },
+                            grid: { color: 'rgba(255,255,255,0.1)' }
+                        }
+                    }
+                }
+            });
+
+            // Normal Backend Chart
+            new Chart(document.getElementById('normalBackendChart'), {
+                type: 'bar',
+                data: {
+                    labels: ['NoCache', 'Naive', 'Coalescing', 'PER'],
+                    datasets: [{
+                        label: 'Backend Requests',
+                        data: [57121, 5800, 27, 440],
+                        backgroundColor: [
+                            'rgba(150, 150, 150, 0.7)',
+                            'rgba(255, 107, 107, 0.7)',
+                            'rgba(0, 212, 170, 0.7)',
+                            'rgba(74, 158, 255, 0.7)'
+                        ],
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { display: false },
+                        title: { display: true, text: 'Backend Requests', color: '#fff' }
+                    },
+                    scales: {
+                        y: {
+                            type: 'logarithmic',
+                            ticks: { color: '#aaa' },
+                            grid: { color: 'rgba(255,255,255,0.1)' }
+                        },
+                        x: { ticks: { color: '#aaa' } }
+                    }
+                }
+            });
+
+            // Normal Latency Chart
+            new Chart(document.getElementById('normalLatencyChart'), {
+                type: 'bar',
+                data: {
+                    labels: ['NoCache', 'Naive', 'Coalescing', 'PER'],
+                    datasets: [{
+                        label: 'P99 Latency (ms)',
+                        data: [122, 109, 104, 46],
+                        backgroundColor: [
+                            'rgba(150, 150, 150, 0.7)',
+                            'rgba(255, 107, 107, 0.7)',
+                            'rgba(0, 212, 170, 0.7)',
+                            'rgba(74, 158, 255, 0.7)'
+                        ],
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { display: false },
+                        title: { display: true, text: 'P99 Latency (ms)', color: '#fff' }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: { color: '#aaa' },
+                            grid: { color: 'rgba(255,255,255,0.1)' }
+                        },
+                        x: { ticks: { color: '#aaa' } }
+                    }
+                }
+            });
+
+            // Death Spiral Chart (Latency=500ms > TTL=200ms)
+            // Coalescing still works, PER fails badly
+            new Chart(document.getElementById('deathSpiralChart'), {
+                type: 'bar',
+                data: {
+                    labels: ['NoCache', 'Naive', 'Coalescing', 'PER'],
+                    datasets: [{
+                        label: 'Backend Requests',
+                        data: [26028, 25708, 312, 35156],
+                        backgroundColor: [
+                            'rgba(150, 150, 150, 0.7)',
+                            'rgba(255, 169, 77, 0.7)',
+                            'rgba(0, 212, 170, 0.7)',
+                            'rgba(255, 107, 107, 0.9)'
+                        ],
+                        borderColor: [
+                            'rgba(150, 150, 150, 1)',
+                            'rgba(255, 169, 77, 1)',
+                            'rgba(0, 212, 170, 1)',
+                            'rgba(255, 107, 107, 1)'
+                        ],
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { display: false },
+                        title: { display: true, text: 'Backend Requests (Lower is Better)', color: '#fff' }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: { color: '#aaa' },
+                            grid: { color: 'rgba(255,255,255,0.1)' }
+                        },
+                        x: { ticks: { color: '#aaa' } }
+                    }
+                }
+            });
+
+            // Crossover Chart
+            new Chart(document.getElementById('crossoverChart'), {
+                type: 'line',
+                data: {
+                    labels: ['80/20', '90/10', '95/5', '99/1'],
+                    datasets: [
+                        {
+                            label: 'LRU+Naive (Millions)',
+                            data: [2.79, 5.20, 5.86, 5.43],
+                            borderColor: 'rgba(255, 107, 107, 1)',
+                            backgroundColor: 'rgba(255, 107, 107, 0.2)',
+                            fill: false,
+                            tension: 0.3,
+                            pointRadius: 8,
+                            pointHoverRadius: 10
+                        },
+                        {
+                            label: 'SIEVE+PER (Millions)',
+                            data: [3.06, 5.25, 5.64, 4.66],
+                            borderColor: 'rgba(0, 212, 170, 1)',
+                            backgroundColor: 'rgba(0, 212, 170, 0.2)',
+                            fill: false,
+                            tension: 0.3,
+                            pointRadius: 8,
+                            pointHoverRadius: 10
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { labels: { color: '#fff' } },
+                        annotation: {
+                            annotations: {
+                                line1: {
+                                    type: 'line',
+                                    xMin: 2,
+                                    xMax: 2,
+                                    borderColor: 'rgba(255, 255, 255, 0.5)',
+                                    borderWidth: 2,
+                                    borderDash: [5, 5]
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            title: { display: true, text: 'Total Requests (Millions)', color: '#fff' },
+                            ticks: { color: '#aaa' },
+                            grid: { color: 'rgba(255,255,255,0.1)' }
+                        },
+                        x: {
+                            title: { display: true, text: 'Hot/Cold Traffic Ratio', color: '#fff' },
+                            ticks: { color: '#aaa' },
+                            grid: { color: 'rgba(255,255,255,0.1)' }
+                        }
+                    }
+                }
+            });
+        }
+    </script>
+</body>
+
+</html>

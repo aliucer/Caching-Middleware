@@ -1,3 +1,0 @@
-Starting Scenario: A Duration: 30s
-Initializing Zipfian Scenario A (Universe=100000, Threads=500, Alpha=0.90, ScanRatio=0.25)...
-Scenario A finished. Total Requests: 93963
